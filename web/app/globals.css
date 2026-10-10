@@ -1,0 +1,48 @@
+body {
+  margin: 0;
+  font-family: sans-serif;
+  color: #1a1a1a;
+  background: #fff;
+}
+
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+h1 {
+  font-size: 1.4rem;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.note {
+  margin: 0 0 24px;
+  color: #444;
+}
+
+section {
+  margin: 0 0 28px;
+}
+
+h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  margin: 0 0 8px;
+}
+
+article {
+  border-top: 1px solid #ddd;
+  padding: 10px 0;
+}
+
+button {
+  margin-top: 8px;
+  font: inherit;
+}
+
+.error {
+  color: #8a1f1f;
+}
