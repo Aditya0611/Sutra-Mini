@@ -16,18 +16,28 @@ import (
 // The external reference is stored before a wait, so a retry during that wait
 // gets HTTP 409 and the original reference. A 500 is not stored.
 type Server struct {
-	mu     sync.Mutex
-	posted map[string]string
-	randFn func() float64
-	hang   time.Duration
+	mu       sync.Mutex
+	posted   map[string]string
+	randFn   func() float64
+	hang     time.Duration
+	failRate float64
+	hangRate float64
 }
 
 func New() *Server {
 	return &Server{
-		posted: map[string]string{},
-		randFn: mathrand.Float64,
-		hang:   5 * time.Second,
+		posted:   map[string]string{},
+		randFn:   mathrand.Float64,
+		hang:     5 * time.Second,
+		failRate: 0.20,
+		hangRate: 0.10,
 	}
+}
+
+func (s *Server) SetFailRate(rate float64) {
+	s.mu.Lock()
+	s.failRate = rate
+	s.mu.Unlock()
 }
 
 func (s *Server) SetRand(fn func() float64) {
@@ -55,15 +65,18 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-func classify(roll float64) string {
-	switch {
-	case roll < 0.20:
+func classify(roll, failRate, hangRate float64) string {
+	// Compare in thousandths so 0.20 + 0.10 stays the same boundary as 0.30.
+	r := int(roll*1000 + 1e-6)
+	failEnd := int(failRate*1000 + 1e-6)
+	hangEnd := int((failRate+hangRate)*1000 + 1e-6)
+	if r < failEnd {
 		return "error"
-	case roll < 0.30:
-		return "hang"
-	default:
-		return "ok"
 	}
+	if r < hangEnd {
+		return "hang"
+	}
+	return "ok"
 }
 
 func (s *Server) post(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +98,7 @@ func (s *Server) post(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	outcome := classify(s.randFn())
+	outcome := classify(s.randFn(), s.failRate, s.hangRate)
 	if outcome == "error" {
 		s.mu.Unlock()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "accounting unavailable"})

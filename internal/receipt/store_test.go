@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,6 +126,54 @@ func TestIdempotencyReplayCreatesNothing(t *testing.T) {
 		t.Fatalf("voucher = %+v", first.Voucher)
 	}
 	assertTotals(t, pool, issueID, in.Qty, 1)
+}
+
+func TestSameKeyDifferentBodyIsRejected(t *testing.T) {
+	store, pool := openStore(t)
+	issueID := insertIssue(t, pool, 10)
+	in := Input{
+		IssueID:        issueID,
+		Qty:            1,
+		ReceivedOn:     time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC),
+		IdempotencyKey: fmt.Sprintf("mismatch-%d", issueID),
+	}
+	if _, _, err := store.Create(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	in.Qty = 2
+	_, _, err := store.Create(context.Background(), in)
+	if !errors.Is(err, ErrIdempotencyMismatch) {
+		t.Fatalf("got %v", err)
+	}
+	assertTotals(t, pool, issueID, 1, 1)
+}
+
+func TestReceiptBeforeIssueDateIsRejected(t *testing.T) {
+	store, pool := openStore(t)
+	issueID := insertIssue(t, pool, 10)
+	_, _, err := store.Create(context.Background(), Input{
+		IssueID:        issueID,
+		Qty:            1,
+		ReceivedOn:     time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		IdempotencyKey: fmt.Sprintf("early-%d", issueID),
+	})
+	if !errors.Is(err, ErrDateBeforeIssue) {
+		t.Fatalf("got %v", err)
+	}
+	assertTotals(t, pool, issueID, 0, 0)
+}
+
+func TestMissingIdempotencyKeyStillCreates(t *testing.T) {
+	store, pool := openStore(t)
+	issueID := insertIssue(t, pool, 5)
+	body := fmt.Sprintf(`{"issue_id":%d,"qty":1,"received_on":"2026-10-10"}`, issueID)
+	req := httptest.NewRequest(http.MethodPost, "/jobwork/receipts", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	NewHandler(store).Create(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	assertTotals(t, pool, issueID, 1, 1)
 }
 
 func openStore(t *testing.T) (*Store, *pgxpool.Pool) {

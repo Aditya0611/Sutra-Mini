@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -12,7 +13,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = errors.New("voucher not found")
+var (
+	ErrNotFound      = errors.New("voucher not found")
+	ErrAlreadyPushed = errors.New("voucher is already pushed")
+)
 
 type Voucher struct {
 	ID          int64     `json:"id"`
@@ -46,6 +50,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := List(r.Context(), h.pool, status)
 	if err != nil {
+		log.Printf("list vouchers: %v", err)
 		writeErr(w, http.StatusInternalServerError, "could not list vouchers")
 		return
 	}
@@ -63,8 +68,13 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if err != nil {
+	if errors.Is(err, ErrAlreadyPushed) {
 		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		log.Printf("retry voucher: %v", err)
+		writeErr(w, http.StatusInternalServerError, "could not retry voucher")
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -128,7 +138,7 @@ func Retry(ctx context.Context, pool *pgxpool.Pool, id int64) (Voucher, error) {
 		return Voucher{}, err
 	}
 	if current.Status == "pushed" {
-		return Voucher{}, errors.New("voucher is already pushed")
+		return Voucher{}, ErrAlreadyPushed
 	}
 	return current, nil
 }

@@ -18,11 +18,13 @@ const (
 )
 
 var (
-	ErrIssueNotFound = errors.New("issue not found")
-	ErrOvershoot     = errors.New("receipt exceeds issued quantity")
-	ErrInvalidQty    = errors.New("qty must be at least 1")
-	ErrInvalidDate   = errors.New("received_on is required")
-	ErrMissingKey    = errors.New("Idempotency-Key is required")
+	ErrIssueNotFound       = errors.New("issue not found")
+	ErrOvershoot           = errors.New("receipt exceeds issued quantity")
+	ErrInvalidQty          = errors.New("qty must be at least 1")
+	ErrInvalidDate         = errors.New("received_on is required")
+	ErrDateBeforeIssue     = errors.New("received_on is before the issue date")
+	ErrMissingKey          = errors.New("Idempotency-Key is required")
+	ErrIdempotencyMismatch = errors.New("idempotency key was already used with a different request")
 )
 
 type Input struct {
@@ -90,16 +92,17 @@ func (s *Store) Create(ctx context.Context, in Input) (Receipt, bool, error) {
 	if rec, ok, err := loadByKey(ctx, tx, in.IdempotencyKey); err != nil {
 		return Receipt{}, false, err
 	} else if ok {
-		return rec, false, nil
+		return replay(rec, in)
 	}
 
 	var issued, received int
+	var issuedOn time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT qty, received_qty
+		SELECT qty, received_qty, issued_on
 		FROM jobwork_issues
 		WHERE id = $1
 		FOR UPDATE
-	`, in.IssueID).Scan(&issued, &received)
+	`, in.IssueID).Scan(&issued, &received, &issuedOn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Receipt{}, false, ErrIssueNotFound
 	}
@@ -111,7 +114,11 @@ func (s *Store) Create(ctx context.Context, in Input) (Receipt, bool, error) {
 	if rec, ok, err := loadByKey(ctx, tx, in.IdempotencyKey); err != nil {
 		return Receipt{}, false, err
 	} else if ok {
-		return rec, false, nil
+		return replay(rec, in)
+	}
+
+	if in.ReceivedOn.Before(issuedOn) {
+		return Receipt{}, false, ErrDateBeforeIssue
 	}
 
 	if received+in.Qty > issued {
@@ -139,7 +146,11 @@ func (s *Store) Create(ctx context.Context, in Input) (Receipt, bool, error) {
 	`, in.IssueID, in.Qty, in.ReceivedOn, in.IdempotencyKey).Scan(&receiptID)
 	if err != nil {
 		if isUnique(err) {
-			return s.replayAfterConflict(ctx, tx, in.IdempotencyKey)
+			rec, _, err := s.replayAfterConflict(ctx, tx, in.IdempotencyKey)
+			if err != nil {
+				return Receipt{}, false, err
+			}
+			return replay(rec, in)
 		}
 		return Receipt{}, false, mapConstraint(err)
 	}
@@ -185,6 +196,13 @@ func (s *Store) replayAfterConflict(ctx context.Context, tx pgx.Tx, key string) 
 	}
 	if !ok {
 		return Receipt{}, false, fmt.Errorf("idempotency key %q conflicted but no receipt was stored", key)
+	}
+	return rec, false, nil
+}
+
+func replay(rec Receipt, in Input) (Receipt, bool, error) {
+	if rec.IssueID != in.IssueID || rec.Qty != in.Qty || rec.ReceivedOn != in.ReceivedOn.Format("2006-01-02") {
+		return Receipt{}, false, ErrIdempotencyMismatch
 	}
 	return rec, false, nil
 }

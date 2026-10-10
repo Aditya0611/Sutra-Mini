@@ -23,7 +23,7 @@ func TestClassify(t *testing.T) {
 		{0.99, "ok"},
 	}
 	for _, tc := range cases {
-		if got := classify(tc.roll); got != tc.want {
+		if got := classify(tc.roll, 0.20, 0.10); got != tc.want {
 			t.Fatalf("classify(%v) = %s, want %s", tc.roll, got, tc.want)
 		}
 	}

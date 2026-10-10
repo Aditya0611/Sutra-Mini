@@ -1,10 +1,19 @@
 package receipt
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
+	"strings"
 	"time"
+)
+
+const (
+	maxBodyBytes = 64 << 10
+	maxKeyLen    = 200
 )
 
 type Handler struct {
@@ -16,10 +25,20 @@ func NewHandler(store *Store) *Handler {
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	key := r.Header.Get("Idempotency-Key")
-	if key == "" {
-		writeErr(w, http.StatusBadRequest, ErrMissingKey.Error())
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if len(key) > maxKeyLen {
+		writeErr(w, http.StatusBadRequest, "Idempotency-Key is too long")
 		return
+	}
+	if key == "" {
+		var err error
+		key, err = newKey()
+		if err != nil {
+			log.Printf("create receipt: %v", err)
+			writeErr(w, http.StatusInternalServerError, "could not record receipt")
+			return
+		}
 	}
 
 	var body struct {
@@ -60,11 +79,24 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrOvershoot):
 		writeErr(w, http.StatusConflict, err.Error())
-	case errors.Is(err, ErrInvalidQty), errors.Is(err, ErrInvalidDate), errors.Is(err, ErrMissingKey):
+	case errors.Is(err, ErrIdempotencyMismatch):
+		writeErr(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrInvalidQty), errors.Is(err, ErrInvalidDate), errors.Is(err, ErrDateBeforeIssue), errors.Is(err, ErrMissingKey):
 		writeErr(w, http.StatusBadRequest, err.Error())
 	default:
+		log.Printf("create receipt: %v", err)
 		writeErr(w, http.StatusInternalServerError, "could not record receipt")
 	}
+}
+
+func newKey() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {

@@ -4,18 +4,32 @@ Reliable accounting push for job-work receipts. A receipt and its voucher are wr
 
 ## Setup
 
-Install Go 1.22 or newer and Node 20 or newer. Create a Neon Postgres database and copy the direct connection string (connection pooling off). The host must not contain `-pooler`.
+Install Go 1.25 or newer and Node 20 or newer. pgx 5.11 needs Go 1.25. Create a Neon Postgres database and copy the direct connection string (connection pooling off). The host must not contain `-pooler`.
+
+Windows:
 
 ```powershell
 copy .env.example .env
 ```
 
-Put the connection string in `.env`:
+Mac or Linux:
+
+```bash
+cp .env.example .env
+```
+
+Put the Neon connection string in `.env`. It must include `sslmode=require`:
 
 ```text
-DATABASE_URL=postgresql://...
+DATABASE_URL=postgresql://user:password@host/neondb?sslmode=require
 MOCK_URL=http://127.0.0.1:8090
+MOCK_FAIL_RATE=0.2
+MOCK_HANG_MS=5000
+MAX_ATTEMPTS=4
+LEASE_MS=12000
 ```
+
+`MOCK_FAIL_RATE=1` makes every accounting call fail, which is useful for the recording. Set it back to `0.2` afterwards. `MOCK_HANG_MS` should stay under 8000, because the worker gives up on a call after 8 seconds. `LEASE_MS` should stay above 8000 so a second worker does not take a voucher while the first call is still running.
 
 `.env` is gitignored. Apply the schema once, from the repo root:
 
@@ -51,9 +65,22 @@ Open http://localhost:3000/sync. The API is on port 8080 and the mock is on port
 
 Record a receipt:
 
+Windows:
+
 ```powershell
-curl -X POST http://localhost:8080/jobwork/receipts -H "Content-Type: application/json" -H "Idempotency-Key: demo-1" -d "{\"issue_id\":1,\"qty\":2,\"received_on\":\"2026-10-10\"}"
+curl.exe -X POST http://localhost:8080/jobwork/receipts -H "Content-Type: application/json" -H "Idempotency-Key: demo-1" -d "{\"issue_id\":1,\"qty\":2,\"received_on\":\"2026-10-10\"}"
 ```
+
+Mac or Linux:
+
+```bash
+curl -X POST http://localhost:8080/jobwork/receipts \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: demo-1" \
+  -d '{"issue_id":1,"qty":2,"received_on":"2026-10-10"}'
+```
+
+The header is optional. If you leave it out, the API creates a key for that request.
 
 The first call returns 201. The same key again returns 200 and the same receipt. A receipt that would pass the issued quantity returns 409.
 
@@ -82,4 +109,6 @@ A failed attempt is retried after 250ms, 500ms, 1s, and then the fourth failure 
 go test ./...
 ```
 
-The receipt tests prove two things: ten concurrent receipts cannot pass the issued quantity, and eight requests with one idempotency key create one receipt and one voucher.
+The receipt tests prove two things: ten concurrent receipts cannot pass the issued quantity, and eight requests with one idempotency key create one receipt and one voucher. The same key with a different quantity is rejected. A second worker that finds a voucher whose accounting reference was already stored marks it pushed with that original reference.
+
+The overshoot test fails if the issue-row lock, the guarded quantity update, and the `received_qty <= qty` check are all removed. The idempotency test fails if the unique key and the second key check are both removed. Either layer on its own can still pass, so the tests are aimed at the whole guarantee.

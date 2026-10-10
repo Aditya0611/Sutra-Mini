@@ -63,6 +63,38 @@ func TestPushReconcilesDuplicate(t *testing.T) {
 	}
 }
 
+func TestCrashThenSecondWorkerKeepsOriginalRef(t *testing.T) {
+	pool := testdb.Open(t)
+	issueID := testdb.InsertIssue(t, pool, 10)
+	rec := createReceipt(t, pool, issueID, "crash-ref")
+	want := map[int64]bool{rec.Voucher.ID: true}
+
+	mock := mockacct.New()
+	mock.SetRand(func() float64 { return 0.90 })
+	ts := httptest.NewServer(mock.Handler())
+	defer ts.Close()
+
+	first := New(pool, Config{MockURL: ts.URL, Lease: time.Minute, HTTPTimeout: 2 * time.Second})
+	claimed := claimOneOf(t, pool, first, want)
+	mock.Remember(claimed.ClientRef, "acct_original")
+	_, err := pool.Exec(context.Background(), `
+		UPDATE vouchers SET lease_until = now() - interval '1 second' WHERE id = $1
+	`, claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := New(pool, Config{MockURL: ts.URL, Lease: time.Minute, HTTPTimeout: 2 * time.Second})
+	again := claimOneOf(t, pool, second, want)
+	if err := second.push(context.Background(), again); err != nil {
+		t.Fatal(err)
+	}
+	item := mustVoucher(t, pool, rec.Voucher.ID)
+	if item.Status != "pushed" || item.ExternalRef == nil || *item.ExternalRef != "acct_original" {
+		t.Fatalf("voucher = %+v", item)
+	}
+}
+
 func TestPushSuccessAndRepeatedFailure(t *testing.T) {
 	pool := testdb.Open(t)
 	issueID := testdb.InsertIssue(t, pool, 10)

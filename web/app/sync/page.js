@@ -33,8 +33,16 @@ export default function SyncPage() {
   async function retry(id) {
     setBusy(id);
     try {
-      await fetch(`/backend/vouchers/${id}/retry`, { method: "POST" });
+      const res = await fetch(`/backend/vouchers/${id}/retry`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || "Retry failed");
+        return;
+      }
+      setError("");
       await load();
+    } catch {
+      setError("Retry failed. The API is not reachable.");
     } finally {
       setBusy(null);
     }

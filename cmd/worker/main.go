@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"time"
 
 	"github.com/Aditya0611/Sutra-Mini/internal/envfile"
 	syncworker "github.com/Aditya0611/Sutra-Mini/internal/sync"
@@ -26,7 +28,22 @@ func main() {
 	}
 	defer pool.Close()
 
-	worker := syncworker.New(pool, syncworker.Config{MockURL: os.Getenv("MOCK_URL")})
+	cfg := syncworker.Config{MockURL: os.Getenv("MOCK_URL")}
+	if v := os.Getenv("MAX_ATTEMPTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			log.Fatal("MAX_ATTEMPTS must be a positive integer")
+		}
+		cfg.MaxAttempts = n
+	}
+	if v := os.Getenv("LEASE_MS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			log.Fatal("LEASE_MS must be a positive number of milliseconds")
+		}
+		cfg.Lease = time.Duration(n) * time.Millisecond
+	}
+	worker := syncworker.New(pool, cfg)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	log.Printf("worker polling, mock %s", mockURL(os.Getenv("MOCK_URL")))
